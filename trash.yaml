@@ -36,75 +36,75 @@ trigger:
     event_type: trash_reminder_check
 
 condition:
-  - alias: "Check event or notification action"
-    or:
-      - and:
+  - condition: or
+    conditions:
+      - condition: and
+        conditions:
           - condition: template
-            value_template: "{{ trigger.platform == 'event' }}"
-          - or:
-              - and:
-                  - condition: template
-                    value_template: "{{ trigger.event.event_type == 'mobile_app_notification_action' }}"
-                  - condition: template
-                    value_template: "{{ trigger.event.data.action == 'mark_done' }}"
-                  - condition: template
-                    value_template: >
-                      {{ trigger.event.data.notification_id == 
-                         state_attr(!input calendar_entity, 'message') ~ '-' ~ 
-                         (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}
-              - condition: template
-                value_template: "{{ trigger.event.event_type == 'trash_reminder_check' }}"
-      - and:
+            value_template: "{{ trigger.platform == 'event' and trigger.event.event_type == 'mobile_app_notification_action' }}"
+          - condition: template
+            value_template: "{{ trigger.event.data.action == 'mark_done' }}"
+      - condition: and
+        conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.platform == 'event' and trigger.event.event_type == 'trash_reminder_check' }}
+      - condition: and
+        conditions:
           - condition: template
             value_template: "{{ trigger.platform == 'time' }}"
           - condition: template
-            value_template: >
-              {{ state_attr(!input calendar_entity, 'start_time') | default('') != '' and
-                 (as_timestamp(state_attr(!input calendar_entity, 'start_time')) | timestamp_custom('%Y-%m-%d')) == 
-                 (now() + timedelta(days=1)).strftime('%Y-%m-%d') and
-                 state_attr(!input calendar_entity, 'message') | default('') != '' and
-                 (state_attr('todo.todo', 'tasks') | default([]) | 
-                  select('equalto', state_attr(!input calendar_entity, 'message') ~ '-' ~ 
-                  (now() + timedelta(days=1)).strftime('%Y-%m-%d')) | list | count == 0) }}
+            value_template: >-
+              {% set calendar = states(states[input.calendar_entity]) %}
+              {% set tomorrow = now() + timedelta(days=1) %}
+              {% set event_date = strptime(state_attr(states[input.calendar_entity], 'start_time'), '%Y-%m-%d').date() %}
+              {{ event_date == tomorrow.date() }}
 
 action:
+  - variables:
+      event_name: "{{ state_attr(states[input.calendar_entity], 'message') }}"
+      task_id: "{{ state_attr(states[input.calendar_entity], 'message') }}-{{ now().date() + timedelta(days=1) }}"
+  
   - choose:
-      - conditions: "{{ trigger.platform == 'event' and trigger.event.event_type == 'mobile_app_notification_action' }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.platform == 'event' and trigger.event.event_type == 'mobile_app_notification_action' }}"
         sequence:
           - service: todo.complete
             data:
-              task: >
-                {{ state_attr(!input calendar_entity, 'message') }}-{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}
+              task: "{{ task_id }}"
           - service: persistent_notification.dismiss
             data:
-              notification_id: >
-                {{ state_attr(!input calendar_entity, 'message') }}-{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}
-      - conditions: "{{ trigger.platform == 'time' or (trigger.platform == 'event' and trigger.event.event_type == 'trash_reminder_check') }}"
+              notification_id: "{{ task_id }}"
+      
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.platform == 'time' or (trigger.platform == 'event' and trigger.event.event_type == 'trash_reminder_check') }}"
         sequence:
           - service: todo.add
             data:
-              task: >
-                {{ state_attr(!input calendar_entity, 'message') }}-{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}
+              task: "{{ task_id }}"
               title: "Trash Reminder"
-              message: "Don't forget to take out the {{ state_attr(!input calendar_entity, 'message') }} bin for tomorrow."
+              message: "Don't forget to take out the {{ event_name }} bin for tomorrow."
+          
           - service: persistent_notification.create
             data:
-              notification_id: >
-                {{ state_attr(!input calendar_entity, 'message') }}-{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}
+              notification_id: "{{ task_id }}"
               title: "Trash day!"
-              message: "Don't forget to take out the {{ state_attr(!input calendar_entity, 'message') }} bin for tomorrow.\n\nClick **Mark Done** when finished."
+              message: "Don't forget to take out the {{ event_name }} bin for tomorrow.\n\nClick **Mark Done** when finished."
               data:
                 actions:
                   - action: "mark_done"
                     title: "Mark Done"
                 icon: mdi:trash-can
+          
           - repeat:
               for_each: !input devices
               sequence:
                 - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
                   data:
                     title: "Trash day!"
-                    message: "Don't forget to take out the {{ state_attr(!input calendar_entity, 'message') }} bin for tomorrow."
+                    message: "Don't forget to take out the {{ event_name }} bin for tomorrow."
                     data:
                       actions:
                         - action: "mark_done"
