@@ -36,6 +36,9 @@ trigger:
 variables:
   tomorrow: "{{ (now() + timedelta(days=1)).date() }}"
   tomorrow_str: "{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}"
+  calendar_state: "{{ states(calendar_entity) }}"
+  calendar_attrs: "{{ state_attr(calendar_entity, 'all_attributes') | default({}) }}"
+  event_start: "{{ state_attr(calendar_entity, 'start_time') | default('') }}"
   event_summary: "{{ state_attr(calendar_entity, 'message') | default('') }}"
   task_id: "{{ event_summary }}-{{ tomorrow_str }}"
 
@@ -53,16 +56,28 @@ action:
             data:
               notification_id: "{{ task_id }}"
     default:
+      # Log state for debugging
+      - service: system_log.write
+        data:
+          message: >
+            Calendar State: {{ calendar_state }}, 
+            Event Start: {{ event_start }},
+            Event Summary: {{ event_summary }},
+            Tomorrow: {{ tomorrow_str }}
+      
       - condition: >
-          {{ state_attr(calendar_entity, 'start_time') is not none and
-             (as_timestamp(state_attr(calendar_entity, 'start_time')) | timestamp_custom('%Y-%m-%d')) == tomorrow_str and
-             event_summary != "" and
+          {{ calendar_state == 'on' and 
+             event_start != '' and
+             event_summary != '' and
+             (as_timestamp(event_start) | timestamp_custom('%Y-%m-%d')) == tomorrow_str and
              (state_attr('todo.todo', 'tasks') | default([]) | select('equalto', task_id) | list | count == 0) }}
+      
       - service: todo.add
         data:
           task: "{{ task_id }}"
           title: "Trash Reminder"
           message: "Don't forget to take out the {{ event_summary }} bin for tomorrow."
+      
       - service: persistent_notification.create
         data:
           notification_id: "{{ task_id }}"
@@ -73,6 +88,7 @@ action:
               - action: "mark_done"
                 title: "Mark Done"
             icon: mdi:trash-can
+      
       - repeat:
           for_each: !input devices
           sequence:
