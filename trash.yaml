@@ -5,7 +5,7 @@ blueprint:
     Uses the event's name as the trash type.
     On the first notification, a todo item is added (via the Local Todo integration) with an ID in the format "EVENT_NAME-YYYY-MM-DD".
     The notification includes an action to mark the todo as done, preventing duplicate reminders.
-    Can be triggered manually from the automation UI for testing.
+    Can be triggered manually via event 'trash_reminder_check' for testing.
   domain: automation
   input:
     calendar_entity:
@@ -32,40 +32,70 @@ trigger:
     at: "22:00:00"
   - platform: event
     event_type: mobile_app_notification_action
+  - platform: event
+    event_type: trash_reminder_check
 
 variables:
   tomorrow: "{{ (now() + timedelta(days=1)).date() }}"
   tomorrow_str: "{{ (now() + timedelta(days=1)).strftime('%Y-%m-%d') }}"
-  event_summary: "{{ state_attr(calendar_entity, 'message') | default('') }}"
+  event_summary: "{{ state_attr(states[input.calendar_entity], 'message') | default('') }}"
   task_id: "{{ event_summary }}-{{ tomorrow_str }}"
 
+condition: >
+  {{ trigger.platform == 'event' and
+     (
+       (trigger.event.event_type == 'mobile_app_notification_action' and
+        trigger.event.data.action == 'mark_done' and
+        trigger.event.data.notification_id == task_id)
+       or
+       trigger.event.event_type == 'trash_reminder_check'
+     )
+  }}
+  or
+  {{ trigger.platform == 'time' and
+     state_attr(states[input.calendar_entity], 'start_time') is not none and
+     (as_timestamp(state_attr(states[input.calendar_entity], 'start_time')) | timestamp_custom('%Y-%m-%d')) == tomorrow_str and
+     event_summary != "" and
+     (state_attr('todo.todo', 'tasks') | default([]) | select('equalto', task_id) | list | count == 0) }}
+
 action:
-  - service: todo.add
-    data:
-      task: "{{ task_id }}"
-      title: "Trash Reminder"
-      message: "Don't forget to take out the {{ event_summary }} bin for tomorrow."
-  - service: persistent_notification.create
-    data:
-      notification_id: "{{ task_id }}"
-      title: "Trash day!"
-      message: "Don't forget to take out the {{ event_summary }} bin for tomorrow.\n\nClick **Mark Done** when finished."
-      data:
-        actions:
-          - action: "mark_done"
-            title: "Mark Done"
-        icon: mdi:trash-can
-  - repeat:
-      for_each: !input devices
-      sequence:
-        - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
-          data:
-            title: "Trash day!"
-            message: "Don't forget to take out the {{ event_summary }} bin for tomorrow."
+  - choose:
+      - conditions: "{{ trigger.platform == 'event' and trigger.event.event_type == 'mobile_app_notification_action' }}"
+        sequence:
+          - service: todo.complete
             data:
-              actions:
-                - action: "mark_done"
-                  title: "Mark Done"
-              icon: mdi:trash-can
+              task: "{{ task_id }}"
+          - service: persistent_notification.dismiss
+            data:
+              notification_id: "{{ task_id }}"
+      - conditions: "{{ trigger.platform == 'time' or (trigger.platform == 'event' and trigger.event.event_type == 'trash_reminder_check') }}"
+        sequence:
+          - service: todo.add
+            data:
+              task: "{{ task_id }}"
+              title: "Trash Reminder"
+              message: "Don't forget to take out the {{ event_summary }} bin for tomorrow."
+          - service: persistent_notification.create
+            data:
+              notification_id: "{{ task_id }}"
+              title: "Trash day!"
+              message: "Don't forget to take out the {{ event_summary }} bin for tomorrow.\n\nClick **Mark Done** when finished."
+              data:
+                actions:
+                  - action: "mark_done"
+                    title: "Mark Done"
+                icon: mdi:trash-can
+          - repeat:
+              for_each: !input devices
+              sequence:
+                - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+                  data:
+                    title: "Trash day!"
+                    message: "Don't forget to take out the {{ event_summary }} bin for tomorrow."
+                    data:
+                      actions:
+                        - action: "mark_done"
+                          title: "Mark Done"
+                      icon: mdi:trash-can
 
 mode: single
